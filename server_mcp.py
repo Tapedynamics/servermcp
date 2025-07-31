@@ -1,4 +1,5 @@
-import os.path
+import os
+import json # <-- Aggiunto import
 import datetime
 import pytz
 from flask import Flask, request, jsonify
@@ -7,19 +8,27 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --- CONFIGURAZIONE ---
 app = Flask(__name__)
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
-TIMEZONE = pytz.timezone('Europe/Rome')
+TIMEZONE = pytz.timezone('Atlantic/Canary')
 
 def get_calendar_service():
     creds = None
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    # --- MODIFICA FONDAMENTALE PER LA SICUREZZA ---
+    # Non cerchiamo più il file token.json, ma leggiamo la variabile d'ambiente.
+    token_json_str = os.environ.get('GOOGLE_TOKEN_JSON')
+
+    if token_json_str:
+        token_data = json.loads(token_json_str)
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+    # --- FINE MODIFICA ---
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-        else: return None
+        else:
+            print("ERRORE: token non trovato o non valido nelle variabili d'ambiente.")
+            return None
     try:
         service = build("calendar", "v3", credentials=creds)
         return service
@@ -27,6 +36,7 @@ def get_calendar_service():
         print(f"Errore connessione servizio: {error}")
         return None
 
+# (Il resto del codice da @app.route in giù rimane identico)
 @app.route('/handle_request', methods=['POST'])
 def handle_request():
     dati_ricevuti = request.json
@@ -48,12 +58,12 @@ def handle_request():
                 },
                 {
                     "name": "crea_appuntamento",
-                    "description": "Crea un nuovo appuntamento nel calendario.",
+                    "description": "Crea un nuovo appuntamento nel calendario con i dettagli del cliente.",
                     "parameters": [
                         {"name": "time", "type": "string", "description": "L'orario dell'appuntamento"},
                         {"name": "date", "type": "string", "description": "La data dell'appuntamento"},
-                        {"name": "summary", "type": "string", "description": "Il titolo dell'evento"},
-                        {"name": "nome", "type": "string", "description": "Il nome del cliente"},
+                        {"name": "summary", "type": "string", "description": "Il titolo dell'evento, es. 'Massaggio Sportivo'"},
+                        {"name": "nome", "type": "string", "description": "Il nome di battesimo del cliente"},
                         {"name": "cognome", "type": "string", "description": "Il cognome del cliente"},
                         {"name": "telefono", "type": "string", "description": "Il numero di telefono del cliente"}
                     ]
@@ -70,7 +80,7 @@ def handle_request():
 
         if tool_chiamato == 'controlla_disponibilita':
             try:
-                giorno_target = datetime.date.today()
+                giorno_target = datetime.date.today() # Semplificazione
                 ora = int(params['time'].split(':')[0])
                 minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
                 
@@ -94,11 +104,12 @@ def handle_request():
 
         elif tool_chiamato == 'crea_appuntamento':
             try:
-                giorno_target = datetime.date.today()
+                giorno_target = datetime.date.today() # Semplificazione
                 ora = int(params['time'].split(':')[0])
                 minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
 
-                aware_dt_start = TIMEZONE.localize(datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti)))
+                naive_dt = datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti))
+                aware_dt_start = TIMEZONE.localize(naive_dt)
                 aware_dt_end = aware_dt_start + datetime.timedelta(hours=1)
 
                 nome_cliente = params.get('nome', '')
@@ -110,8 +121,8 @@ def handle_request():
                 event = {
                     'summary': f"{params.get('summary', 'Appuntamento')} - {nome_cliente} {cognome_cliente}",
                     'description': descrizione_evento,
-                    'start': {'dateTime': aware_dt_start.isoformat(), 'timeZone': 'Europe/Rome'},
-                    'end': {'dateTime': aware_dt_end.isoformat(), 'timeZone': 'Europe/Rome'},
+                    'start': {'dateTime': aware_dt_start.isoformat(), 'timeZone': 'Atlantic/Canary'},
+                    'end': {'dateTime': aware_dt_end.isoformat(), 'timeZone': 'Atlantic/Canary'},
                 }
 
                 created_event = service.events().insert(calendarId='primary', body=event).execute()
