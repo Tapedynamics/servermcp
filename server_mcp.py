@@ -74,8 +74,7 @@ def handle_request():
         if tool_chiamato == 'controlla_disponibilita':
             try:
                 giorno_target = datetime.date.today()
-                # --- CORREZIONE QUI ---
-                ora = int(params['time'].split(':')[0]) 
+                ora = int(params['time'].split(':')[0])
                 minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
                 
                 naive_dt = datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti))
@@ -99,7 +98,6 @@ def handle_request():
         elif tool_chiamato == 'crea_appuntamento':
             try:
                 giorno_target = datetime.date.today()
-                # --- E CORREZIONE QUI ---
                 ora = int(params['time'].split(':')[0])
                 minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
 
@@ -110,4 +108,22 @@ def handle_request():
                 cognome_cliente = params.get('cognome', '')
                 telefono_cliente = params.get('telefono', 'Non fornito')
                 
-                descrizione_evento = f"Cliente: {nome_cliente} {cognome_cliente}\nTelefono
+                # --- QUESTA ERA LA RIGA CON L'ERRORE, ORA CORRETTA ---
+                descrizione_evento = f"Cliente: {nome_cliente} {cognome_cliente}\nTelefono: {telefono_cliente}"
+
+                event = {
+                    'summary': f"{params.get('summary', 'Appuntamento')} - {nome_cliente} {cognome_cliente}",
+                    'description': descrizione_evento,
+                    'start': {'dateTime': aware_dt_start.isoformat(), 'timeZone': 'Atlantic/Canary'},
+                    'end': {'dateTime': aware_dt_end.isoformat(), 'timeZone': 'Atlantic/Canary'},
+                }
+
+                created_event = service.events().insert(calendarId='primary', body=event).execute()
+                print(f"Evento creato: {created_event.get('htmlLink')}")
+                risposta_per_ai = {"text": "Perfetto, ho fissato il suo appuntamento in agenda. Grazie e a presto!"}
+            except Exception as e:
+                print(f"Errore: {e}")
+                risposta_per_ai = {"text": "Mi scusi, ho riscontrato un problema nel fissare l'appuntamento."}
+    
+    print(f"--- Invio risposta: ---\n{risposta_per_ai}")
+    return jsonify(risposta_per_ai)
