@@ -1,21 +1,22 @@
 from flask import Flask, request, jsonify
 
+# Creiamo l'applicazione Flask
 app = Flask(__name__)
 
-# Aggiungiamo una rotta principale per vedere se il server è vivo
+# Definiamo una rotta principale per testare con il browser
 @app.route('/')
 def index():
-    return "Server di test è attivo e funzionante!"
+    return "Server di test v2 è attivo!"
 
-# La nostra rotta per l'AI
+# Definiamo la rotta per l'assistente AI
 @app.route('/handle_request', methods=['POST'])
 def handle_request():
-    print("--- Richiesta di test a /handle_request ricevuta correttamente! ---")
+    # Stampiamo un messaggio nei log per confermare che siamo entrati qui
+    print("--- Richiesta a /handle_request ricevuta con successo! ---")
 
-    dati_ricevuti = request.json or {} # Legge i dati per evitare errori
-    print(f"Dati: {dati_ricevuti}")
+    # Leggiamo i dati ricevuti per evitare errori
+    dati_ricevuti = request.json or {}
+    print(f"Dati ricevuti: {dati_ricevuti}")
 
-    return jsonify({"text": "Il server di test ha risposto con successo!"})
-
-# Non abbiamo più bisogno della parte if __name__ == '__main__':
-# perché gunicorn non la usa. La lasciamo pulita così.
+    # Mandiamo una risposta di successo
+    return jsonify({"text": "Il server v2 ha risposto con successo!"})
