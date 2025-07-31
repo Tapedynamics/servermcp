@@ -1,5 +1,6 @@
 import os.path
 import datetime
+import pytz
 from flask import Flask, request, jsonify
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -8,113 +9,122 @@ from googleapiclient.errors import HttpError
 
 # --- CONFIGURAZIONE ---
 app = Flask(__name__)
-# Definiamo gli ambiti di cui abbiamo bisogno. Per ora solo Calendar.
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+TIMEZONE = pytz.timezone('Europe/Rome')
 
 def get_calendar_service():
-    """
-    Questa funzione crea e restituisce un servizio del calendario autenticato.
-    Usa i file token.json e credentials.json per farlo.
-    """
     creds = None
-    # Il file token.json contiene le chiavi di accesso permanenti.
     if os.path.exists("token.json"):
         creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-    
-    # Se le credenziali non sono valide (es. scadute), le rinfresca.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            # Questo non dovrebbe accadere su un server. L'autenticazione
-            # iniziale va fatta solo una volta in locale con autenticazione.py
-            print("Errore: credenziali non valide o mancanti. Eseguire autenticazione.py in locale.")
             return None
     try:
         service = build("calendar", "v3", credentials=creds)
         return service
     except HttpError as error:
-        print(f"Si è verificato un errore nella connessione al servizio: {error}")
+        print(f"Errore connessione servizio: {error}")
         return None
 
 @app.route('/handle_request', methods=['POST'])
 def handle_request():
-    """
-    Questa è la funzione principale che gestisce tutte le richieste dall'AI.
-    """
     dati_ricevuti = request.json
-    print(f"--- Dati ricevuti dall'AI: ---\n{dati_ricevuti}")
+    print(f"--- Dati ricevuti: ---\n{dati_ricevuti}")
 
     method = dati_ricevuti.get('method')
+    risposta_per_ai = {}
 
-    # Se la piattaforma chiede di descrivere gli strumenti del server
     if method == 'initialize':
         risposta_per_ai = {
-            "tools": [{
-                "name": "controlla_disponibilita",
-                "description": "Controlla se c'è un appuntamento disponibile nel calendario per una data e un'ora specifiche.",
-                "parameters": [
-                    {"name": "time", "type": "string", "description": "L'orario richiesto, es. '16:00'"},
-                    {"name": "date", "type": "string", "description": "La data richiesta, es. 'oggi', 'domani', o '2025-08-01'"}
-                ]
-            }]
+            "tools": [
+                {
+                    "name": "controlla_disponibilita",
+                    "description": "Controlla la disponibilità nel calendario per una data e ora.",
+                    "parameters": [
+                        {"name": "time", "type": "string", "description": "L'orario richiesto, es. '16:00'"},
+                        {"name": "date", "type": "string", "description": "La data richiesta, es. 'domani'"}
+                    ]
+                },
+                {
+                    "name": "crea_appuntamento",
+                    "description": "Crea un nuovo appuntamento nel calendario con i dettagli del cliente.",
+                    "parameters": [
+                        {"name": "time", "type": "string", "description": "L'orario dell'appuntamento"},
+                        {"name": "date", "type": "string", "description": "La data dell'appuntamento"},
+                        {"name": "summary", "type": "string", "description": "Il titolo dell'evento, es. 'Massaggio Sportivo'"},
+                        # --- NUOVI PARAMETRI ---
+                        {"name": "nome", "type": "string", "description": "Il nome di battesimo del cliente"},
+                        {"name": "cognome", "type": "string", "description": "Il cognome del cliente"},
+                        {"name": "telefono", "type": "string", "description": "Il numero di telefono del cliente"}
+                    ]
+                }
+            ]
         }
-    # Se è una normale richiesta durante la conversazione
     else:
+        service = get_calendar_service()
+        if not service:
+            return jsonify({"text": "Errore: non riesco a connettermi al calendario."})
+
+        tool_chiamato = dati_ricevuti.get('tool')
         params = dati_ricevuti.get('params', {})
-        orario_richiesto_str = params.get('time')
-        data_richiesta_str = params.get('date')
 
-        # Se non abbiamo l'orario, non possiamo controllare.
-        if not orario_richiesto_str:
-            risposta_per_ai = {"text": "Certamente, mi dica l'orario che le interessa e controllo subito."}
-        else:
-            service = get_calendar_service()
-            if not service:
-                risposta_per_ai = {"text": "Si è verificato un errore interno, non riesco a connettermi all'agenda."}
-            else:
-                try:
-                    # --- LOGICA DI CONTROLLO DEL CALENDARIO ---
-                    # Imposta la data di oggi se non specificata
-                    if not data_richiesta_str or data_richiesta_str.lower() == 'oggi':
-                        giorno_target = datetime.date.today()
-                    elif data_richiesta_str.lower() == 'domani':
-                        giorno_target = datetime.date.today() + datetime.timedelta(days=1)
-                    else:
-                        # Qui andrebbe inserita una logica per interpretare altre date
-                        giorno_target = datetime.date.today()
+        if tool_chiamato == 'controlla_disponibilita':
+            try:
+                giorno_target = datetime.date.today()
+                ora = int(params['time'].split(':')[0])
+                minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
+                
+                naive_dt = datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti))
+                aware_dt_start = TIMEZONE.localize(naive_dt)
+                aware_dt_end = aware_dt_start + datetime.timedelta(hours=1)
 
-                    ora = int(orario_richiesto_str.split(':')[0])
-                    minuti = int(orario_richiesto_str.split(':')[1]) if ':' in orario_richiesto_str else 0
+                events_result = service.events().list(
+                    calendarId='primary', timeMin=aware_dt_start.isoformat(), timeMax=aware_dt_end.isoformat(),
+                    maxResults=1, singleEvents=True
+                ).execute()
+                events = events_result.get('items', [])
 
-                    # Definiamo la finestra di tempo da controllare (es. un'ora)
-                    time_min_dt = datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti))
-                    time_max_dt = time_min_dt + datetime.timedelta(hours=1)
-                    
-                    # Formattazione per l'API di Google
-                    time_min_iso = time_min_dt.isoformat() + 'Z'
-                    time_max_iso = time_max_dt.isoformat() + 'Z'
-                    
-                    print(f"Controllo eventi tra {time_min_iso} e {time_max_iso}...")
-                    
-                    events_result = service.events().list(
-                        calendarId='primary', timeMin=time_min_iso, timeMax=time_max_iso,
-                        maxResults=1, singleEvents=True
-                    ).execute()
-                    events = events_result.get('items', [])
+                if not events:
+                    risposta_per_ai = {"text": "Ho controllato l'agenda! Sì, per quell'ora c'è disponibilità. Posso confermare l'appuntamento?"}
+                else:
+                    risposta_per_ai = {"text": "Ho controllato l'agenda. Mi dispiace, ma per quell'ora risulta già un appuntamento."}
+            except Exception as e:
+                print(f"Errore: {e}")
+                risposta_per_ai = {"text": "Scusi, ho avuto un problema nel leggere l'agenda."}
 
-                    if not events:
-                        testo_risposta = "Ho controllato l'agenda! Sì, per quell'ora c'è disponibilità. Posso confermare l'appuntamento?"
-                    else:
-                        testo_risposta = "Ho controllato l'agenda. Mi dispiace, ma per quell'ora risulta già un appuntamento. Desidera un altro orario?"
+        elif tool_chiamato == 'crea_appuntamento':
+            try:
+                giorno_target = datetime.date.today()
+                ora = int(params['time'].split(':')[0])
+                minuti = int(params['time'].split(':')[1]) if ':' in params['time'] else 0
 
-                    risposta_per_ai = {"text": testo_risposta}
+                aware_dt_start = TIMEZONE.localize(datetime.datetime.combine(giorno_target, datetime.time(hour=ora, minute=minuti)))
+                aware_dt_end = aware_dt_start + datetime.timedelta(hours=1)
 
-                except Exception as e:
-                    print(f"Errore durante il controllo del calendario: {e}")
-                    risposta_per_ai = {"text": "Scusi, ho avuto un problema nel leggere l'agenda. Può ripetere l'orario?"}
+                # --- NUOVA DESCRIZIONE EVENTO ---
+                nome_cliente = params.get('nome', '')
+                cognome_cliente = params.get('cognome', '')
+                telefono_cliente = params.get('telefono', 'Non fornito')
+                
+                descrizione_evento = f"Cliente: {nome_cliente} {cognome_cliente}\nTelefono: {telefono_cliente}"
 
-    print(f"--- Invio questa risposta all'AI: ---\n{risposta_per_ai}")
+                event = {
+                    'summary': f"{params.get('summary', 'Appuntamento')} - {nome_cliente} {cognome_cliente}",
+                    'description': descrizione_evento,
+                    'start': {'dateTime': aware_dt_start.isoformat(), 'timeZone': 'Europe/Rome'},
+                    'end': {'dateTime': aware_dt_end.isoformat(), 'timeZone': 'Europe/Rome'},
+                }
+
+                created_event = service.events().insert(calendarId='primary', body=event).execute()
+                print(f"Evento creato: {created_event.get('htmlLink')}")
+                risposta_per_ai = {"text": "Perfetto, ho fissato il suo appuntamento in agenda. Grazie e a presto!"}
+            except Exception as e:
+                print(f"Errore: {e}")
+                risposta_per_ai = {"text": "Mi scusi, ho riscontrato un problema nel fissare l'appuntamento."}
+    
+    print(f"--- Invio risposta: ---\n{risposta_per_ai}")
     return jsonify(risposta_per_ai)
 
 if __name__ == '__main__':
